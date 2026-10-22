@@ -57,6 +57,8 @@ mb_last_call = 0.0
 transcode_locks_guard = threading.Lock()
 transcode_locks = {}
 log = logging.getLogger("uvicorn.error")
+# Written by the Docker build so you can confirm a redeploy is running the new image.
+BUILD_DATE = (APP_DIR / "BUILD_DATE").read_text().strip() if (APP_DIR / "BUILD_DATE").is_file() else "development"
 
 
 @contextmanager
@@ -187,6 +189,7 @@ def init_db():
 
 
 init_db()
+log.info("Current build: %s", BUILD_DATE)
 app = FastAPI(title="Current", docs_url=None, redoc_url=None)
 
 
@@ -270,6 +273,12 @@ async def origin_guard(request: Request, call_next):
         if origin and urllib.parse.urlparse(origin).netloc != request.headers.get("host"):
             return JSONResponse({"detail": "Invalid request origin"}, status_code=403)
     return await call_next(request)
+
+
+@app.get("/api/health")
+def health():
+    # No database or disk work, so the container health check stays cheap.
+    return {"status": "ok", "build": BUILD_DATE}
 
 
 @app.get("/api/status")

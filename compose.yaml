@@ -1,18 +1,26 @@
 services:
   current:
+    # Prebuilt by GitHub Actions on every push to main. Update with `docker compose pull && docker compose up -d`.
+    image: ghcr.io/captainburton/current-music:latest
+    # Only used when the image can't be pulled, or with `docker compose up -d --build` from a clone.
     build: .
     container_name: current-music
+    restart: unless-stopped
+    stop_grace_period: 5s
     ports:
-      - "8787:8787"
+      - "${CURRENT_PORT:-8787}:8787"
+    volumes:
+      # Accounts, playlists, artwork, and the database. Set DATA_PATH to keep them in a host folder instead.
+      - ${DATA_PATH:-current_data}:/data
+      # Your music, read-only. In the app the library is always /music, whatever the host folder is called.
+      - ${MUSIC_PATH:?Set MUSIC_PATH to your music folder, e.g. in .env}:/music:ro
     environment:
       CURRENT_DATA_DIR: /data
       CURRENT_MUSIC_ROOTS: /music
       # Set to 1 when serving behind HTTPS.
-      # CURRENT_SECURE_COOKIES: "1"
-      # Required for MusicBrainz identification; use your email or website.
-      MUSICBRAINZ_CONTACT: ""
-    volumes:
-      - ./data:/data
-      - /path/to/your/music:/music:ro
-    restart: unless-stopped
-    stop_grace_period: 5s
+      CURRENT_SECURE_COOKIES: ${CURRENT_SECURE_COOKIES:-0}
+      # Optional; identifies MusicBrainz requests. Can also be set in Admin Settings.
+      MUSICBRAINZ_CONTACT: ${MUSICBRAINZ_CONTACT:-}
+
+volumes:
+  current_data:

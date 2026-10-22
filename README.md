@@ -2,20 +2,28 @@
 
 Current is a private, self-hosted music and podcast player with a Spotify-inspired interface and a cyan `#00c3ff` default theme. It scans your own music folders, streams tracks through the browser, and keeps listening data on your server.
 
-## Run with Docker Compose
+## Run with Docker
 
-1. Open [compose.yaml](compose.yaml) and replace `/path/to/your/music` with the absolute path to your music collection. The folder is mounted read-only at `/music` in the container. To add more collections, add more volume mounts beneath `/music`, such as `/srv/jazz:/music/jazz:ro`.
-2. Run `docker compose up -d --build`. The first build installs FFmpeg and takes a few minutes; later builds reuse cached layers and downloads, so they take seconds. Restarts finish within about 3 seconds even while someone is listening.
-3. Open `http://YOUR_SERVER_IP:8787`. The first visit shows setup for the first admin account. Enter `/music` as the optional folder path, or add locations later in **Admin Settings**.
-4. Scan the library from **Admin Settings → Music library**.
+Current runs as a single container with FFmpeg, the web app, and its database inside. GitHub Actions builds the image for Intel/AMD and ARM servers on every push to `main` and publishes it as `ghcr.io/captainburton/current-music`, so your server needs no source code and no build.
 
-The SQLite database, cached album art, user avatars, and artist images live in `./data`. Back up that folder to preserve accounts, playlists, favorites, artist profiles, and album matches. Music files are never modified by scans.
+1. **Sign in to the registry once.** The repository is private, so its image is too. Create a GitHub token (classic) with only the `read:packages` scope, then run `docker login ghcr.io -u CaptainBurton` on the server and paste the token as the password. Docker remembers it.
+2. **Add two files.** In a folder on the server, save [compose.yaml](compose.yaml) and a `.env` file based on [.env.example](.env.example). Set `MUSIC_PATH` to your music folder; it is mounted read-only at `/music`.
+3. **Start it:** `docker compose up -d`.
+4. Open `http://YOUR_SERVER_IP:8787` and create the first admin account. The music folder is already filled in as `/music`; setup adds it and starts the first scan.
 
-For access outside a trusted local network, put Current behind an HTTPS reverse proxy and set `CURRENT_SECURE_COOKIES: "1"` in the Compose environment. Use access controls on the proxy as appropriate for your server.
+**Updates:** `docker compose pull && docker compose up -d`. The `Current build:` log line and `/api/health` show when the running image was built. Restarts take about 3 seconds, even while someone is listening.
+
+**Portainer:** add `ghcr.io` as a registry with your GitHub username and token. Then go to **Stacks → Add stack → Web editor**, paste `compose.yaml`, add `MUSIC_PATH` under **Environment variables**, and deploy. To update, redeploy the stack with re-pull turned on.
+
+**Building from source:** clone the repository and run `docker compose up -d --build`. The first build installs FFmpeg and takes a few minutes; later builds reuse cached downloads and layers.
+
+Accounts, playlists, favorites, artwork, artist profiles, album matches, and converted audio live in the `current_data` Docker volume. Set `DATA_PATH` in `.env` to keep them in a host folder instead, which is easier to back up. Scans never modify music files. To add more collections, add mounts beneath `/music` in compose.yaml, such as `/srv/jazz:/music/jazz:ro`.
+
+For access outside a trusted local network, put Current behind an HTTPS reverse proxy and set `CURRENT_SECURE_COOKIES=1`. Use access controls on the proxy as appropriate for your server.
 
 ## Library organization
 
-Current scans MP3, FLAC, M4A, M4B, MP4 audio, AAC, OGG, Opus, WAV, AIFF, WMA, APE, WavPack, Musepack, and DSF files. Files the browser cannot decode are converted to MP3 for playback with FFmpeg. Converted copies are cached under `./data/transcodes`; source files are never modified. The Docker image includes FFmpeg. For local development, install FFmpeg separately to play formats your browser does not support. Embedded tags are preferred by default. Missing fields are inferred from a configurable path pattern, initially:
+Current scans MP3, FLAC, M4A, M4B, MP4 audio, AAC, OGG, Opus, WAV, AIFF, WMA, APE, WavPack, Musepack, and DSF files. Files the browser cannot decode are converted to MP3 for playback with FFmpeg. Converted copies are cached in the data folder's `transcodes` directory; source files are never modified. The Docker image includes FFmpeg. For local development, install FFmpeg separately to play formats your browser does not support. Embedded tags are preferred by default. Missing fields are inferred from a configurable path pattern, initially:
 
 ```text
 {artist}/{album}/{track} - {title}
@@ -29,7 +37,7 @@ Library scans can be run on demand. They update changed files and remove entries
 
 Current gets release years and genres from the [MusicBrainz API](https://musicbrainz.org/doc/MusicBrainz_API) and cover art from the [Cover Art Archive](https://musicbrainz.org/doc/Cover_Art_Archive/API). No API key or paid account is required. Set a contact email during first-run setup, in **Admin Settings → Online metadata**, or through `MUSICBRAINZ_CONTACT` in Compose. MusicBrainz requires an identifying User-Agent and no more than one request per second; Current observes that limit.
 
-Enable online matching during a scan for high-confidence matches, or open an album and select **Find album metadata** to choose a match yourself. Matching sends album and artist search terms to MusicBrainz. Artwork is cached in `./data/covers`.
+Enable online matching during a scan for high-confidence matches, or open an album and select **Find album metadata** to choose a match yourself. Matching sends album and artist search terms to MusicBrainz. Artwork is cached in the data folder's `covers` directory.
 
 ## Accounts and listening
 

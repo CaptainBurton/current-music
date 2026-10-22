@@ -13,7 +13,10 @@ COPY app ./app
 # Precompile once at build time instead of on every container start.
 RUN python -m compileall -q app
 COPY web ./web
-RUN mkdir -p /data /music
+# Printed at startup and by /api/health so you can confirm a redeploy is running the new build.
+RUN date -u '+%Y-%m-%d %H:%M UTC' > /app/BUILD_DATE && mkdir -p /data /music
 EXPOSE 8787
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=5)" || exit 1
 # Open audio streams would otherwise hold shutdown until Docker's 10 second kill timeout.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8787", "--timeout-graceful-shutdown", "3"]
