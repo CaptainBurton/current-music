@@ -1,0 +1,18 @@
+services:
+  current:
+    build: .
+    container_name: current-music
+    ports:
+      - "8787:8787"
+    environment:
+      CURRENT_DATA_DIR: /data
+      CURRENT_MUSIC_ROOTS: /music
+      # Set to 1 when serving behind HTTPS.
+      # CURRENT_SECURE_COOKIES: "1"
+      # Required for MusicBrainz identification; use your email or website.
+      MUSICBRAINZ_CONTACT: ""
+    volumes:
+      - ./data:/data
+      - /path/to/your/music:/music:ro
+    restart: unless-stopped
+    stop_grace_period: 5s

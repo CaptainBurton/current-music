@@ -1,0 +1,8 @@
+# Send only what the image needs, so builds stay fast even if music or data sit in this folder.
+*
+!app
+!web
+!requirements.txt
+**/__pycache__
+**/*.pyc
+**/.DS_Store
