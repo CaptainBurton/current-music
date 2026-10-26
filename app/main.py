@@ -126,6 +126,33 @@ def init_db():
           track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
           PRIMARY KEY(user_id, track_id)
         );
+        CREATE TABLE IF NOT EXISTS library_tracks (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+          added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(user_id, track_id)
+        );
+        CREATE TABLE IF NOT EXISTS library_albums (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          album_id INTEGER NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+          added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(user_id, album_id)
+        );
+        CREATE TABLE IF NOT EXISTS artist_follows (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          artist_id INTEGER NOT NULL REFERENCES artist_profiles(id) ON DELETE CASCADE,
+          followed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(user_id, artist_id)
+        );
+        CREATE TABLE IF NOT EXISTS notifications (
+          id INTEGER PRIMARY KEY,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          read_at TEXT,
+          UNIQUE(user_id, track_id)
+        );
+        CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, read_at, id DESC);
         CREATE TABLE IF NOT EXISTS playlists (
           id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
@@ -443,6 +470,7 @@ async def change_password(request: Request, user=Depends(current_user)):
 
 def album_row(row):
     result = dict(row)
+    result["saved"] = bool(result.get("saved"))
     if not result.get("release_type") and result.get("track_count") is not None:
         result["release_type"] = "single" if result["track_count"] == 1 else "album"
     result["cover_url"] = f"/api/albums/{result['id']}/cover" if result.get("cover_path") else None
@@ -452,6 +480,7 @@ def album_row(row):
 
 def artist_payload(row):
     result = dict(row)
+    result["followed"] = bool(result.get("followed"))
     result["portrait_url"] = (f"/api/artists/{result['id']}/image/portrait?v={result['image_version']}"
                               if result.pop("portrait_type", None) else None)
     result["banner_url"] = (f"/api/artists/{result['id']}/image/banner?v={result['image_version']}"
@@ -463,41 +492,68 @@ def artist_payload(row):
 def track_rows(conn, user_id, where="", params=(), order="albums.artist, albums.title, tracks.disc, tracks.track_no, tracks.title", limit=500):
     query = f"""SELECT tracks.id, tracks.title, tracks.artist, tracks.album_id, albums.title AS album,
       albums.artist AS album_artist, albums.year, albums.cover_path, tracks.duration, tracks.disc,
-      tracks.track_no, tracks.codec, (favorites.track_id IS NOT NULL) AS favorite
+      tracks.track_no, tracks.codec, (favorites.track_id IS NOT NULL) AS favorite,
+      (saved_track.track_id IS NOT NULL OR saved_album.album_id IS NOT NULL) AS saved
       FROM tracks JOIN albums ON albums.id=tracks.album_id
       LEFT JOIN favorites ON favorites.track_id=tracks.id AND favorites.user_id=?
+      LEFT JOIN library_tracks AS saved_track ON saved_track.track_id=tracks.id AND saved_track.user_id=?
+      LEFT JOIN library_albums AS saved_album ON saved_album.album_id=albums.id AND saved_album.user_id=?
       {where} ORDER BY {order} LIMIT ?"""
-    rows = [dict(r) for r in conn.execute(query, (user_id, *params, limit)).fetchall()]
+    rows = [dict(r) for r in conn.execute(query, (user_id, user_id, user_id, *params, limit)).fetchall()]
     for row in rows:
         row["cover_url"] = f"/api/albums/{row['album_id']}/cover" if row.pop("cover_path") else None
         row["favorite"] = bool(row["favorite"])
+        row["saved"] = bool(row["saved"])
     return rows
 
 
 @app.get("/api/home")
 def home(user=Depends(current_user)):
     with db() as conn:
-        albums = [album_row(r) for r in conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count FROM albums
-           JOIN tracks ON tracks.album_id=albums.id GROUP BY albums.id ORDER BY albums.created_at DESC, albums.id DESC LIMIT 12""").fetchall()]
-        top_albums = [album_row(r) for r in conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count,
-           COUNT(favorites.track_id) AS liked_count FROM albums JOIN tracks ON tracks.album_id=albums.id
-           LEFT JOIN favorites ON favorites.track_id=tracks.id AND favorites.user_id=?
+        if user["role"] == "admin":
+            album_query = """SELECT albums.*,COUNT(tracks.id) AS track_count,
+              EXISTS(SELECT 1 FROM library_albums saved WHERE saved.album_id=albums.id AND saved.user_id=?) AS saved
+              FROM albums JOIN tracks ON tracks.album_id=albums.id
+              GROUP BY albums.id ORDER BY albums.created_at DESC, albums.id DESC LIMIT 12"""
+        else:
+            album_query = """SELECT albums.*,COUNT(tracks.id) AS track_count,1 AS saved
+              FROM library_albums saved JOIN albums ON albums.id=saved.album_id
+              JOIN tracks ON tracks.album_id=albums.id WHERE saved.user_id=?
+              GROUP BY albums.id ORDER BY saved.added_at DESC LIMIT 12"""
+        albums = [album_row(r) for r in conn.execute(album_query, (user["id"],)).fetchall()]
+        top_albums = [album_row(r) for r in conn.execute("""SELECT albums.*,COUNT(DISTINCT tracks.id) AS track_count,
+           COUNT(favorites.track_id) AS liked_count,
+           EXISTS(SELECT 1 FROM library_albums saved WHERE saved.album_id=albums.id AND saved.user_id=?) AS saved
+           FROM albums JOIN tracks ON tracks.album_id=albums.id
+           LEFT JOIN favorites ON favorites.track_id=tracks.id
            GROUP BY albums.id ORDER BY liked_count DESC,track_count DESC,albums.title COLLATE NOCASE LIMIT 8""",
            (user["id"],)).fetchall()]
         top_artists = [artist_payload(r) for r in conn.execute("""SELECT artist_profiles.*,
            (SELECT first_album.id FROM albums AS first_album WHERE first_album.artist_id=artist_profiles.id
             AND first_album.cover_path IS NOT NULL
             ORDER BY first_album.created_at DESC,first_album.id DESC LIMIT 1) AS cover_album_id,
-           COUNT(DISTINCT albums.id) AS album_count,COUNT(tracks.id) AS track_count,
-           COUNT(favorites.track_id) AS liked_count FROM artist_profiles
+           COUNT(DISTINCT albums.id) AS album_count,COUNT(DISTINCT tracks.id) AS track_count,
+           COUNT(favorites.track_id) AS liked_count,
+           EXISTS(SELECT 1 FROM artist_follows followed WHERE followed.artist_id=artist_profiles.id AND followed.user_id=?) AS followed
+           FROM artist_profiles
            JOIN albums ON albums.artist_id=artist_profiles.id JOIN tracks ON tracks.album_id=albums.id
-           LEFT JOIN favorites ON favorites.track_id=tracks.id AND favorites.user_id=?
+           LEFT JOIN favorites ON favorites.track_id=tracks.id
            GROUP BY artist_profiles.id ORDER BY liked_count DESC,track_count DESC,artist_profiles.name COLLATE NOCASE LIMIT 8""",
            (user["id"],)).fetchall()]
-        recent = track_rows(conn, user["id"], order="tracks.created_at DESC, tracks.id DESC", limit=12)
-        counts = {"tracks": conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0],
-                  "albums": conn.execute("SELECT COUNT(*) FROM albums WHERE EXISTS(SELECT 1 FROM tracks WHERE tracks.album_id=albums.id)").fetchone()[0],
-                  "artists": conn.execute("SELECT COUNT(DISTINCT artist) FROM albums WHERE EXISTS(SELECT 1 FROM tracks WHERE tracks.album_id=albums.id)").fetchone()[0]}
+        if user["role"] == "admin":
+            recent = track_rows(conn, user["id"], order="tracks.created_at DESC, tracks.id DESC", limit=12)
+            counts = {"tracks": conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0],
+                      "albums": conn.execute("SELECT COUNT(*) FROM albums WHERE EXISTS(SELECT 1 FROM tracks WHERE tracks.album_id=albums.id)").fetchone()[0],
+                      "artists": conn.execute("SELECT COUNT(*) FROM artist_profiles WHERE EXISTS(SELECT 1 FROM albums JOIN tracks ON tracks.album_id=albums.id WHERE albums.artist_id=artist_profiles.id)").fetchone()[0]}
+        else:
+            recent = track_rows(conn, user["id"], "WHERE saved_track.track_id IS NOT NULL OR saved_album.album_id IS NOT NULL",
+                                order="tracks.created_at DESC, tracks.id DESC", limit=12)
+            counts = {"tracks": conn.execute("""SELECT COUNT(*) FROM tracks JOIN albums ON albums.id=tracks.album_id
+                LEFT JOIN library_tracks st ON st.track_id=tracks.id AND st.user_id=?
+                LEFT JOIN library_albums sa ON sa.album_id=albums.id AND sa.user_id=?
+                WHERE st.track_id IS NOT NULL OR sa.album_id IS NOT NULL""", (user["id"], user["id"])).fetchone()[0],
+                      "albums": conn.execute("SELECT COUNT(*) FROM library_albums WHERE user_id=?", (user["id"],)).fetchone()[0],
+                      "artists": conn.execute("SELECT COUNT(*) FROM artist_follows WHERE user_id=?", (user["id"],)).fetchone()[0]}
     return {"albums": albums, "top_albums": top_albums, "top_artists": top_artists,
             "recent": recent, "counts": counts}
 
@@ -505,21 +561,34 @@ def home(user=Depends(current_user)):
 @app.get("/api/tracks")
 def tracks(user=Depends(current_user)):
     with db() as conn:
-        return track_rows(conn, user["id"], limit=10000)
+        where = "" if user["role"] == "admin" else "WHERE saved_track.track_id IS NOT NULL OR saved_album.album_id IS NOT NULL"
+        return track_rows(conn, user["id"], where, limit=10000)
 
 
 @app.get("/api/albums")
 def albums(user=Depends(current_user)):
     with db() as conn:
-        return [album_row(r) for r in conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count,
-          COALESCE(SUM(tracks.duration),0) AS duration FROM albums JOIN tracks ON tracks.album_id=albums.id
-          GROUP BY albums.id ORDER BY albums.artist COLLATE NOCASE, albums.title COLLATE NOCASE""").fetchall()]
+        if user["role"] == "admin":
+            query = """SELECT albums.*,COUNT(tracks.id) AS track_count,
+              COALESCE(SUM(tracks.duration),0) AS duration,
+              EXISTS(SELECT 1 FROM library_albums saved WHERE saved.album_id=albums.id AND saved.user_id=?) AS saved
+              FROM albums JOIN tracks ON tracks.album_id=albums.id GROUP BY albums.id
+              ORDER BY albums.artist COLLATE NOCASE, albums.title COLLATE NOCASE"""
+        else:
+            query = """SELECT albums.*,COUNT(tracks.id) AS track_count,
+              COALESCE(SUM(tracks.duration),0) AS duration,1 AS saved
+              FROM library_albums saved JOIN albums ON albums.id=saved.album_id
+              JOIN tracks ON tracks.album_id=albums.id WHERE saved.user_id=? GROUP BY albums.id
+              ORDER BY albums.artist COLLATE NOCASE, albums.title COLLATE NOCASE"""
+        return [album_row(r) for r in conn.execute(query, (user["id"],)).fetchall()]
 
 
 @app.get("/api/albums/{album_id}")
 def album_detail(album_id: int, user=Depends(current_user)):
     with db() as conn:
-        row = conn.execute("SELECT * FROM albums WHERE id=?", (album_id,)).fetchone()
+        row = conn.execute("""SELECT albums.*,
+          EXISTS(SELECT 1 FROM library_albums saved WHERE saved.album_id=albums.id AND saved.user_id=?) AS saved
+          FROM albums WHERE albums.id=?""", (user["id"], album_id)).fetchone()
         if not row:
             fail("Album not found", 404)
         album = album_row(row)
@@ -531,10 +600,14 @@ def album_detail(album_id: int, user=Depends(current_user)):
 @app.get("/api/artists")
 def artists(user=Depends(current_user)):
     with db() as conn:
-        rows = conn.execute("""SELECT p.*,COUNT(DISTINCT a.id) AS album_count,
-          COUNT(t.id) AS track_count,MIN(CASE WHEN a.cover_path IS NOT NULL THEN a.id END) AS cover_album_id
-          FROM artist_profiles p JOIN albums a ON a.artist_id=p.id
-          JOIN tracks t ON t.album_id=a.id GROUP BY p.id ORDER BY p.name COLLATE NOCASE""").fetchall()
+        where = "" if user["role"] == "admin" else "JOIN artist_follows followed ON followed.artist_id=p.id AND followed.user_id=?"
+        query = f"""SELECT p.*,COUNT(DISTINCT a.id) AS album_count,
+          COUNT(t.id) AS track_count,MIN(CASE WHEN a.cover_path IS NOT NULL THEN a.id END) AS cover_album_id,
+          EXISTS(SELECT 1 FROM artist_follows af WHERE af.artist_id=p.id AND af.user_id=?) AS followed
+          FROM artist_profiles p {where} JOIN albums a ON a.artist_id=p.id
+          JOIN tracks t ON t.album_id=a.id GROUP BY p.id ORDER BY p.name COLLATE NOCASE"""
+        params = (user["id"],) if user["role"] == "admin" else (user["id"], user["id"])
+        rows = conn.execute(query, params).fetchall()
         return [artist_payload(row) for row in rows]
 
 
@@ -556,12 +629,15 @@ def artist_image(artist_id: int, kind: str, user=Depends(current_user)):
 @app.get("/api/artists/{name:path}")
 def artist_detail(name: str, user=Depends(current_user)):
     with db() as conn:
-        profile = conn.execute("SELECT * FROM artist_profiles WHERE name=?", (name,)).fetchone()
+        profile = conn.execute("""SELECT artist_profiles.*,
+          EXISTS(SELECT 1 FROM artist_follows af WHERE af.artist_id=artist_profiles.id AND af.user_id=?) AS followed
+          FROM artist_profiles WHERE name=?""", (user["id"], name)).fetchone()
         if not profile:
             fail("Artist not found", 404)
-        rows = conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count FROM albums
-          JOIN tracks ON tracks.album_id=albums.id WHERE albums.artist_id=? GROUP BY albums.id
-          ORDER BY albums.year DESC,albums.title""", (profile["id"],)).fetchall()
+        rows = conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count,
+          EXISTS(SELECT 1 FROM library_albums saved WHERE saved.album_id=albums.id AND saved.user_id=?) AS saved
+          FROM albums JOIN tracks ON tracks.album_id=albums.id WHERE albums.artist_id=? GROUP BY albums.id
+          ORDER BY albums.year DESC,albums.title""", (user["id"], profile["id"])).fetchall()
         result = artist_payload(profile)
         releases = [album_row(row) for row in rows]
         for release in releases:
@@ -580,11 +656,99 @@ def search(q: str = "", user=Depends(current_user)):
     like = f"%{escaped}%"
     with db() as conn:
         found_tracks = track_rows(conn, user["id"], "WHERE tracks.title LIKE ? ESCAPE '\\' OR tracks.artist LIKE ? ESCAPE '\\' OR albums.title LIKE ? ESCAPE '\\'", (like, like, like), limit=100)
-        found_albums = [album_row(r) for r in conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count FROM albums
+        found_albums = [album_row(r) for r in conn.execute("""SELECT albums.*,COUNT(tracks.id) AS track_count,
+          EXISTS(SELECT 1 FROM library_albums saved WHERE saved.album_id=albums.id AND saved.user_id=?) AS saved FROM albums
           JOIN tracks ON tracks.album_id=albums.id WHERE albums.title LIKE ? ESCAPE '\\' OR albums.artist LIKE ? ESCAPE '\\'
-          GROUP BY albums.id LIMIT 30""", (like, like)).fetchall()]
+          GROUP BY albums.id LIMIT 30""", (user["id"], like, like)).fetchall()]
         found_artists = [r[0] for r in conn.execute("SELECT DISTINCT artist FROM albums WHERE artist LIKE ? ESCAPE '\\' LIMIT 20", (like,)).fetchall()]
     return {"tracks": found_tracks, "albums": found_albums, "artists": found_artists}
+
+
+@app.get("/api/explore")
+def explore(user=Depends(current_user)):
+    featured = home(user)
+    with db() as conn:
+        popular_tracks = track_rows(conn, user["id"],
+            order="(SELECT COUNT(*) FROM favorites f WHERE f.track_id=tracks.id) DESC, tracks.created_at DESC, tracks.id DESC",
+            limit=12)
+    return {"artists": featured["top_artists"], "albums": featured["top_albums"], "tracks": popular_tracks}
+
+
+@app.put("/api/library/tracks/{track_id}")
+def save_track(track_id: int, user=Depends(current_user)):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM tracks WHERE id=?", (track_id,)).fetchone():
+            fail("Track not found", 404)
+        conn.execute("INSERT OR IGNORE INTO library_tracks(user_id,track_id) VALUES(?,?)", (user["id"], track_id))
+    return {"saved": True}
+
+
+@app.delete("/api/library/tracks/{track_id}")
+def unsave_track(track_id: int, user=Depends(current_user)):
+    with db() as conn:
+        conn.execute("DELETE FROM library_tracks WHERE user_id=? AND track_id=?", (user["id"], track_id))
+    return {"saved": False}
+
+
+@app.put("/api/library/albums/{album_id}")
+def save_album(album_id: int, user=Depends(current_user)):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM albums WHERE id=?", (album_id,)).fetchone():
+            fail("Album not found", 404)
+        conn.execute("INSERT OR IGNORE INTO library_albums(user_id,album_id) VALUES(?,?)", (user["id"], album_id))
+    return {"saved": True}
+
+
+@app.delete("/api/library/albums/{album_id}")
+def unsave_album(album_id: int, user=Depends(current_user)):
+    with db() as conn:
+        conn.execute("DELETE FROM library_albums WHERE user_id=? AND album_id=?", (user["id"], album_id))
+    return {"saved": False}
+
+
+@app.put("/api/artists/{artist_id}/follow")
+def follow_artist(artist_id: int, user=Depends(current_user)):
+    with db() as conn:
+        if not conn.execute("SELECT 1 FROM artist_profiles WHERE id=?", (artist_id,)).fetchone():
+            fail("Artist not found", 404)
+        conn.execute("INSERT OR IGNORE INTO artist_follows(user_id,artist_id) VALUES(?,?)", (user["id"], artist_id))
+    return {"followed": True}
+
+
+@app.delete("/api/artists/{artist_id}/follow")
+def unfollow_artist(artist_id: int, user=Depends(current_user)):
+    with db() as conn:
+        conn.execute("DELETE FROM artist_follows WHERE user_id=? AND artist_id=?", (user["id"], artist_id))
+    return {"followed": False}
+
+
+@app.get("/api/notifications")
+def notifications(user=Depends(current_user)):
+    with db() as conn:
+        rows = conn.execute("""SELECT n.id,n.created_at,n.read_at,t.title AS track_title,
+          a.id AS album_id,a.title AS album_title,p.name AS artist_name
+          FROM notifications n JOIN tracks t ON t.id=n.track_id
+          JOIN albums a ON a.id=t.album_id LEFT JOIN artist_profiles p ON p.id=a.artist_id
+          WHERE n.user_id=? ORDER BY n.id DESC LIMIT 50""", (user["id"],)).fetchall()
+        unread = conn.execute("SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL", (user["id"],)).fetchone()[0]
+    return {"items": [dict(row) for row in rows], "unread": unread}
+
+
+@app.put("/api/notifications/read-all")
+def read_all_notifications(user=Depends(current_user)):
+    with db() as conn:
+        conn.execute("UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE user_id=? AND read_at IS NULL", (user["id"],))
+    return {"ok": True}
+
+
+@app.put("/api/notifications/{notification_id}/read")
+def read_notification(notification_id: int, user=Depends(current_user)):
+    with db() as conn:
+        result = conn.execute("UPDATE notifications SET read_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+                              (notification_id, user["id"]))
+        if not result.rowcount:
+            fail("Notification not found", 404)
+    return {"ok": True}
 
 
 @app.get("/api/albums/{album_id}/cover")
@@ -1089,6 +1253,12 @@ def index_track(path, stat, location):
             duration=excluded.duration,mtime=excluded.mtime,size=excluded.size,codec=excluded.codec""",
             (location["id"], str(path), values["title"], values["artist"], album_id,
              values["disc"], values["track"], values["duration"], stat.st_mtime, stat.st_size, path.suffix[1:].upper()))
+        if not existing:
+            track_id = conn.execute("SELECT id FROM tracks WHERE path=?", (str(path),)).fetchone()[0]
+            artist_id = conn.execute("SELECT artist_id FROM albums WHERE id=?", (album_id,)).fetchone()[0]
+            if artist_id:
+                conn.execute("""INSERT OR IGNORE INTO notifications(user_id,track_id)
+                  SELECT user_id,? FROM artist_follows WHERE artist_id=?""", (track_id, artist_id))
     return "updated" if existing else "added"
 
 

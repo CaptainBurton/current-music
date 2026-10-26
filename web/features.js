@@ -2,10 +2,12 @@
 paths.mic = '<rect x="8" y="2" width="8" height="13" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>';
 paths.lyrics = '<path d="M4 5h16M4 10h12M4 15h16M4 20h10"/>';
 paths.queue = '<path d="M3 6h12M3 11h12M3 16h8M15 15l6 3-6 3z"/>';
+paths.bell = '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>';
 const lyricsCache = new Map();
 let lastProgressSave = 0;
 let activePlayerPanel = null;
 let playerPanelOpener = null;
+let searchTimer = null;
 
 function avatarMarkup(user, className='avatar') {
   return `<span class="${className}">${user.avatar_url?`<img src="${esc(user.avatar_url)}" alt="">`:esc((user.display_name||user.username||'?')[0].toUpperCase())}</span>`;
@@ -25,7 +27,12 @@ renderShell = function() {
   coreRenderShell();
   applyTheme();
   const firstGroup = document.querySelector('.sidebar .side-group');
+  firstGroup?.querySelector('[data-view="search"]')?.remove();
+  firstGroup?.insertAdjacentHTML('beforeend', `<button class="nav-item" data-view="explore">${icon('disc')}<span>Explore</span></button>`);
   firstGroup?.insertAdjacentHTML('beforeend', `<button class="nav-item" data-view="podcasts">${icon('mic')}<span>Podcasts</span></button>`);
+  document.querySelectorAll('.sidebar .side-group')[1]?.classList.add('secondary-side-group');
+  document.querySelector('.top-left')?.insertAdjacentHTML('afterend', `<label class="top-search">${icon('search')}<input id="global-search" type="search" placeholder="Search music" aria-label="Search your library and the server" autocomplete="off"></label>`);
+  document.querySelector('.top-right')?.insertAdjacentHTML('beforeend', `<div class="notification-wrap"><button class="icon-button notification-bell" aria-label="Notifications" aria-expanded="false" title="Notifications">${icon('bell')}<span class="notification-badge" hidden></span></button><div class="notification-dropdown" hidden></div></div>`);
   document.querySelector('.sidebar .brand')?.insertAdjacentHTML('afterend', '<div class="spotify-side-identity"><img src="/assets/spotify-icon.svg" alt=""><span>Spotify theme</span></div>');  document.querySelector('.top-right')?.insertAdjacentHTML('afterbegin', '<div class="sabrina-theme-badge"><img src="/assets/sabrina-signature.svg" alt=""><span>SABRINA<br>CARPENTER</span></div>');
   document.querySelector('.side-bottom')?.insertAdjacentHTML('afterbegin', `<button class="nav-item" data-view="profile">${icon('user')}<span>Your Settings</span></button>`);
   document.querySelector('.player-right')?.insertAdjacentHTML('afterbegin', `<button class="icon-button player-lyrics" data-view="nowplaying" title="Now Playing and lyrics" aria-label="Now Playing and lyrics" aria-pressed="false">${icon('lyrics')}</button>`);
@@ -33,18 +40,79 @@ renderShell = function() {
   document.querySelector('.app')?.insertAdjacentHTML('beforeend', `<div class="player-panel-backdrop" data-player-panel-close></div><aside class="player-panel" role="dialog" aria-modal="false" aria-hidden="true" aria-labelledby="player-panel-title"><header class="player-panel-header"><div><span class="eyebrow">YOUR PLAYER</span><h2 id="player-panel-title"></h2></div><button class="icon-button player-panel-close" data-player-panel-close aria-label="Close panel" title="Close panel">${icon('close')}</button></header><div class="player-panel-body"></div></aside>`);
   activePlayerPanel = null;
   document.body.classList.remove('player-panel-open');
+  const search=document.getElementById('global-search');
+  search.value=state.searchQuery||'';
+  search.addEventListener('focus',()=>{if(state.view!=='search')navigate('search')});
+  search.addEventListener('input',()=>{state.searchQuery=search.value;if(state.view!=='search')navigate('search');else renderSearch()});
+  document.querySelector('.notification-bell').addEventListener('click',toggleNotifications);
+  document.getElementById('play-pause').addEventListener('click',e=>{const button=e.currentTarget;button.classList.remove('play-bounce');void button.offsetWidth;button.classList.add('play-bounce')});
+  clearInterval(state.notificationTimer);
+  refreshNotifications();
+  state.notificationTimer=setInterval(refreshNotifications,30000);
   refreshUserChip();
 };
+
+function renderSearch() {
+  const query=(state.searchQuery||'').trim();
+  setContent(`<div class="page-header"><div><div class="eyebrow">FIND YOUR NEXT FAVORITE</div><h1>Search</h1><p>Search your saved music and everything on the server.</p></div></div><div id="search-results">${query?'<p class="hint">Searching…</p>':empty('What do you want to hear?','Search from the field above, or browse popular music in Explore.','<button class="outline-button" data-view="explore">Explore music</button>')}</div>`,'Search');
+  clearTimeout(searchTimer);
+  if(!query)return;
+  searchTimer=setTimeout(async()=>{
+    try {
+      const result=await api('/search?q='+encodeURIComponent(query));
+      if(state.view!=='search'||(state.searchQuery||'').trim()!==query)return;
+      const target=document.getElementById('search-results');if(!target)return;
+      const savedTracks=result.tracks.filter(t=>t.saved),serverTracks=result.tracks.filter(t=>!t.saved);
+      const savedAlbums=result.albums.filter(a=>a.saved),serverAlbums=result.albums.filter(a=>!a.saved);
+      state.visibleTracks=result.tracks;
+      const group=(heading,albums,tracks,artists=[])=>!albums.length&&!tracks.length&&!artists.length?'':`<section class="section search-group"><h2 class="section-title">${heading}</h2>${artists.length?`<div class="quick-grid search-artists">${artists.map(name=>`<button class="quick-card" data-artist-name="${esc(name)}"><div class="mini-cover">${icon('user')}</div><span>${esc(name)}</span></button>`).join('')}</div>`:''}${albums.length?`<h3>Albums</h3><div class="cards">${albums.map(albumCard).join('')}</div>`:''}${tracks.length?`<h3>Songs</h3>${trackTable(tracks)}`:''}</section>`;
+      target.innerHTML=group('In your library',savedAlbums,savedTracks)+group('On the server',serverAlbums,serverTracks,result.artists)||empty('No results found',`Nothing matches “${query}”.`);
+    } catch(err){notify(err.message)}
+  },220);
+}
+
+async function renderExplore() {
+  const data=await api('/explore');
+  state.visibleTracks=data.tracks;
+  const artists=data.artists.map(a=>`<article class="card artist-card" data-artist-name="${esc(a.name)}"><div class="artist-card-image">${a.portrait_url?`<img src="${esc(a.portrait_url)}" alt="">`:a.cover_album_id?`<img src="/api/albums/${a.cover_album_id}/cover" alt="">`:icon('user')}</div><div class="card-title">${esc(a.name)}</div><p class="card-sub">${a.album_count} release${a.album_count===1?'':'s'}</p></article>`).join('');
+  setContent(`<div class="page-header"><div><div class="eyebrow">DISCOVER ON THIS SERVER</div><h1>Explore</h1><p>Popular artists, albums, and songs from the shared collection.</p></div></div>${artists?`<section class="section"><h2 class="section-title">Popular artists</h2><div class="cards artist-cards">${artists}</div></section>`:''}${data.albums.length?`<section class="section"><h2 class="section-title">Popular albums</h2><div class="cards">${data.albums.map(albumCard).join('')}</div></section>`:''}${data.tracks.length?`<section class="section"><h2 class="section-title">Popular songs</h2>${trackTable(data.tracks)}</section>`:''}${!artists&&!data.albums.length&&!data.tracks.length?empty('Nothing to explore yet','Ask an admin to scan some music.'):''}`,'Explore');
+}
+
+function notificationDate(value) {
+  const date=new Date(value.replace(' ','T')+'Z');
+  return Number.isNaN(date.getTime())?'':date.toLocaleDateString();
+}
+
+async function refreshNotifications() {
+  if(!state.user)return;
+  try {
+    const data=await api('/notifications');
+    const wrap=document.querySelector('.notification-wrap');if(!wrap)return;
+    state.notifications=data.items;
+    const badge=wrap.querySelector('.notification-badge');badge.hidden=!data.unread;badge.textContent=data.unread>99?'99+':String(data.unread);
+    const dropdown=wrap.querySelector('.notification-dropdown');
+    dropdown.innerHTML=`<div class="notification-head"><strong>Notifications</strong>${data.unread?'<button class="text-link" data-notification-action="read-all">Mark all read</button>':''}</div>${data.items.length?`<div class="notification-list">${data.items.map(item=>`<button class="notification-item ${item.read_at?'':'is-unread'}" data-notification-id="${item.id}" data-album-id="${item.album_id}"><span class="notification-dot"></span><span><strong>${esc(item.artist_name||'An artist you follow')}</strong> added ${esc(item.track_title)}<small>${esc(item.album_title)} · ${notificationDate(item.created_at)}</small></span></button>`).join('')}</div>`:'<p class="notification-empty">New songs from artists you follow will appear here.</p>'}`;
+  } catch(err){/* A temporary refresh failure should not interrupt listening. */}
+}
+
+function toggleNotifications() {
+  const wrap=document.querySelector('.notification-wrap');if(!wrap)return;
+  const dropdown=wrap.querySelector('.notification-dropdown');
+  dropdown.hidden=!dropdown.hidden;
+  wrap.querySelector('.notification-bell').setAttribute('aria-expanded',String(!dropdown.hidden));
+  if(!dropdown.hidden)refreshNotifications();
+}
+document.addEventListener('click',e=>{if(!e.target.closest('.notification-wrap')){const wrap=document.querySelector('.notification-wrap');if(wrap){wrap.querySelector('.notification-dropdown').hidden=true;wrap.querySelector('.notification-bell').setAttribute('aria-expanded','false')}}});
 
 const coreRenderHome=renderHome;
 renderHome=async function() {
   await coreRenderHome();
   const data=state.home;
   const anchor=document.querySelector('.hero + .section')||document.querySelector('.hero');
-  if(!anchor||!data?.counts.tracks)return;
+  if(!anchor)return;
   const artistCards=(data.top_artists||[]).map(artist=>`<article class="card artist-card home-artist-card" data-artist-name="${esc(artist.name)}"><div class="artist-card-image">${artist.portrait_url?`<img src="${esc(artist.portrait_url)}" alt="">`:artist.cover_album_id?`<img src="/api/albums/${artist.cover_album_id}/cover" alt="">`:icon('user')}</div><div class="card-title">${esc(artist.name)}</div><p class="card-sub">Artist · ${artist.album_count} release${artist.album_count===1?'':'s'}</p></article>`).join('');
   const albumCards=(data.top_albums||[]).map(albumCard).join('');
-  anchor.insertAdjacentHTML('afterend',`${artistCards?`<section class="section home-feature-section"><div class="section-head"><div><h2 class="section-title">Top artists</h2><p class="section-sub">Artists you have liked rise to the front</p></div><button class="text-link" data-view="artists">Show all</button></div><div class="home-scroll-row">${artistCards}</div></section>`:''}${albumCards?`<section class="section home-feature-section"><div class="section-head"><div><h2 class="section-title">Top albums</h2><p class="section-sub">Favorites and the biggest releases in your collection</p></div><button class="text-link" data-view="albums">Show all</button></div><div class="home-scroll-row">${albumCards}</div></section>`:''}`);
+  anchor.insertAdjacentHTML('afterend',`${artistCards?`<section class="section home-feature-section"><div class="section-head"><div><h2 class="section-title">Popular artists</h2><p class="section-sub">Discover music from the server collection</p></div><button class="text-link" data-view="explore">Explore</button></div><div class="home-scroll-row">${artistCards}</div></section>`:''}${albumCards?`<section class="section home-feature-section"><div class="section-head"><div><h2 class="section-title">Popular albums</h2><p class="section-sub">Find something new to save or play</p></div><button class="text-link" data-view="explore">Explore</button></div><div class="home-scroll-row">${albumCards}</div></section>`:''}`);
   if(document.body.dataset.theme==='sabrina')document.querySelector('.hero')?.insertAdjacentHTML('beforeend','<div class="sabrina-hero-identity"><img src="/assets/sabrina-signature.svg" alt=""><strong>SABRINA CARPENTER</strong><span>THEME</span></div>');
   if(document.body.dataset.theme==='spotify')document.querySelector('.hero')?.insertAdjacentHTML('beforeend','<div class="spotify-hero-identity"><img src="/assets/spotify-icon.svg" alt=""><strong>Spotify theme</strong></div>');
   if(document.body.dataset.theme==='doja')document.querySelector('.hero')?.insertAdjacentHTML('beforeend','<div class="doja-hero-identity"><img src="/assets/doja-cat-signature.svg" alt=""><span>DOJA CAT</span></div>');
@@ -59,13 +127,14 @@ navigate = async function(view='home', id=null, push=true) {
     return;
   }
   closePlayerPanel();
-  if (!['profile','podcasts','podcast'].includes(view)) return coreNavigate(view,id,push);
+  if (!['profile','podcasts','podcast','explore'].includes(view)) return coreNavigate(view,id,push);
   state.view=view; state.id=id;
   if (push) pushAppRoute(view,id);
   try {
     if (view==='profile') renderProfile();
     else if (view==='podcasts') await renderPodcasts();
     else if (view==='podcast') await renderPodcast(id);
+    else if (view==='explore') await renderExplore();
   } catch(err) {
     setContent(empty('Could not open this page',err.message),'Error');
   }
@@ -81,6 +150,7 @@ function setPlayerPanelContent(html, title) {
 function openPlayerPanel(view) {
   const panel=document.querySelector('.player-panel');
   if (!panel) return;
+  if (activePlayerPanel===view) { closePlayerPanel(); return; }
   if (!activePlayerPanel) playerPanelOpener=document.activeElement;
   activePlayerPanel=view;
   if (view==='queue') renderQueue();
@@ -109,6 +179,10 @@ function closePlayerPanel(restoreFocus=true) {
 const coreEndSession=endSession;
 endSession=function() {
   closePlayerPanel(false);
+  clearInterval(state.notificationTimer);
+  clearTimeout(searchTimer);
+  state.searchQuery='';
+  state.notifications=[];
   coreEndSession();
 };
 
@@ -409,14 +483,14 @@ audio.addEventListener('pause',()=>{syncNowToggle();if(state.current?.kind==='po
 
 renderArtists=async function() {
   const artists=await api('/artists');
-  setContent(`<div class="page-header"><div><div class="eyebrow">THE PEOPLE BEHIND THE MUSIC</div><h1>Artists</h1><p>${artists.length} artist${artists.length===1?'':'s'} in your collection</p></div></div><div class="page-actions"><button class="outline-button" data-view="albums">Albums</button><button class="outline-button" data-view="tracks">Songs</button>${state.user.role==='admin'?'<button class="outline-button" data-action="manage-artists">Manage artists</button>':''}</div>${artists.length?`<div class="cards artist-cards">${artists.map(a=>`<article class="card artist-card" data-artist-name="${esc(a.name)}"><div class="artist-card-image">${a.portrait_url?`<img src="${esc(a.portrait_url)}" alt="">`:a.cover_album_id?`<img src="/api/albums/${a.cover_album_id}/cover" alt="" onerror="this.style.display='none'">`:icon('user')}</div><div class="card-title">${esc(a.name)}</div><p class="card-sub">${a.album_count} release${a.album_count===1?'':'s'} · ${a.track_count} songs</p></article>`).join('')}</div>`:empty('No artists yet','Artist profiles appear automatically after a library scan.')}`,'Artists');
+  setContent(`<div class="page-header"><div><div class="eyebrow">THE PEOPLE BEHIND THE MUSIC</div><h1>Artists</h1><p>${artists.length} ${state.user.role==='admin'?'server':'followed'} artist${artists.length===1?'':'s'}</p></div></div><div class="page-actions"><button class="outline-button" data-view="albums">Albums</button><button class="outline-button" data-view="tracks">Songs</button>${state.user.role==='admin'?'<button class="outline-button" data-action="manage-artists">Manage artists</button>':''}</div>${artists.length?`<div class="cards artist-cards">${artists.map(a=>`<article class="card artist-card" data-artist-name="${esc(a.name)}"><div class="artist-card-image">${a.portrait_url?`<img src="${esc(a.portrait_url)}" alt="">`:a.cover_album_id?`<img src="/api/albums/${a.cover_album_id}/cover" alt="" onerror="this.style.display='none'">`:icon('user')}</div><div class="card-title">${esc(a.name)}</div><p class="card-sub">${a.album_count} release${a.album_count===1?'':'s'} · ${a.track_count} songs</p></article>`).join('')}</div>`:empty('No artists followed yet','Find artists in Search or Explore, then follow them for new music notifications.','<button class="outline-button" data-view="explore">Explore artists</button>')}`,'Artists');
 };
 
 renderArtist=async function(name) {
   const a=await api('/artists/'+encodeURIComponent(name));
   const all=[...a.albums,...a.singles];
   setContent(`<div class="artist-hero" ${a.banner_url?`style="background-image:linear-gradient(90deg,#090b0fe8,#090b0f55),url('${esc(a.banner_url)}')"`:''}><div class="artist-hero-portrait">${a.portrait_url?`<img src="${esc(a.portrait_url)}" alt="">`:icon('user')}</div><div class="artist-hero-copy"><div class="eyebrow">ARTIST</div><h1>${esc(a.name)}</h1><p>${a.album_count??all.length} release${all.length===1?'':'s'} · ${all.reduce((n,r)=>n+r.track_count,0)} songs</p>${a.bio?`<p class="artist-bio">${esc(a.bio)}</p>`:''}</div></div>
-    <div class="page-actions"><button class="round-play" data-play-artist="${esc(a.name)}" ${all.length?'':'disabled'} title="Play artist">${icon('play')}</button>${state.user.role==='admin'?`<button class="outline-button" data-action="edit-artist" data-artist-id="${a.id}">Edit artist</button>`:''}</div>
+    <div class="page-actions"><button class="round-play" data-play-artist="${esc(a.name)}" ${all.length?'':'disabled'} title="Play artist">${icon('play')}</button><button class="outline-button follow-button ${a.followed?'is-followed':''}" data-follow-artist="${a.id}" aria-pressed="${a.followed}">${a.followed?'Following':'Follow artist'}</button>${state.user.role==='admin'?`<button class="outline-button" data-action="edit-artist" data-artist-id="${a.id}">Edit artist</button>`:''}</div>
     ${a.albums.length?`<section class="section"><h2 class="section-title">Albums</h2><div class="cards" style="margin-top:17px">${a.albums.map(albumCard).join('')}</div></section>`:''}
     ${a.singles.length?`<section class="section"><h2 class="section-title">Singles</h2><div class="cards" style="margin-top:17px">${a.singles.map(albumCard).join('')}</div></section>`:''}
     ${!all.length?empty('No releases yet','An admin can assign music to this artist in Admin Settings.'):''}`,'Artist');
@@ -435,6 +509,41 @@ async function uploadArtistImage(artistId,kind,file) {
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Upload failed');
   return data;
+}
+
+async function cropArtistImage(file,kind) {
+  if(file.size>6_000_000)throw new Error('Choose an image under 6 MB');
+  const source=URL.createObjectURL(file);
+  const picture=new Image();
+  try { await new Promise((resolve,reject)=>{picture.onload=resolve;picture.onerror=()=>reject(new Error('Could not open this image'));picture.src=source}); }
+  finally { URL.revokeObjectURL(source); }
+  const width=kind==='banner'?1200:600,height=kind==='banner'?400:600;
+  return new Promise(resolve=>{
+    const overlay=modal(`${modalHead(kind==='banner'?'Position cover image':'Crop portrait')}<p>Drag the image to position it. Use the slider to zoom.</p><div class="crop-stage"><canvas width="${width}" height="${height}" aria-label="Image crop preview"></canvas></div><div class="crop-zoom"><label for="crop-zoom">Zoom</label><input id="crop-zoom" type="range" min="1" max="3" value="1" step="0.01"></div><div class="crop-actions"><button class="outline-button" data-close-modal>Cancel</button><button class="primary-button" type="button" id="crop-save">Use photo</button></div>`);
+    const canvas=overlay.querySelector('canvas'),ctx=canvas.getContext('2d');
+    const slider=overlay.querySelector('#crop-zoom');
+    let zoom=1,offsetX=0,offsetY=0,drag=null,done=false;
+    const draw=()=>{
+      const scale=Math.max(width/picture.naturalWidth,height/picture.naturalHeight)*zoom;
+      const drawnWidth=picture.naturalWidth*scale,drawnHeight=picture.naturalHeight*scale;
+      offsetX=Math.max((width-drawnWidth)/2,Math.min((drawnWidth-width)/2,offsetX));
+      offsetY=Math.max((height-drawnHeight)/2,Math.min((drawnHeight-height)/2,offsetY));
+      ctx.clearRect(0,0,width,height);
+      ctx.drawImage(picture,(width-drawnWidth)/2+offsetX,(height-drawnHeight)/2+offsetY,drawnWidth,drawnHeight);
+    };
+    draw();
+    slider.oninput=()=>{zoom=Number(slider.value);draw()};
+    canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,offsetX,offsetY};canvas.setPointerCapture(e.pointerId)};
+    canvas.onpointermove=e=>{if(!drag)return;const rect=canvas.getBoundingClientRect();offsetX=drag.offsetX+(e.clientX-drag.x)*width/rect.width;offsetY=drag.offsetY+(e.clientY-drag.y)*height/rect.height;draw()};
+    canvas.onpointerup=canvas.onpointercancel=()=>{drag=null};
+    const finish=value=>{if(done)return;done=true;observer.disconnect();overlay.remove();resolve(value)};
+    const observer=new MutationObserver(()=>{if(!overlay.isConnected)finish(null)});
+    observer.observe(document.body,{childList:true});
+    overlay.querySelector('#crop-save').onclick=()=>canvas.toBlob(blob=>{
+      if(!blob){notify('Could not crop this image');return}
+      finish(new File([blob],`${kind}.jpg`,{type:'image/jpeg'}));
+    },'image/jpeg',0.9);
+  });
 }
 
 async function renderArtistManager() {
@@ -457,14 +566,19 @@ async function renderArtistManager() {
   document.getElementById('new-artist-form').onsubmit=async e=>{e.preventDefault();try{const created=await api('/admin/artists',{method:'POST',body:{name:e.target.elements.name.value}});state.adminArtistId=created.id;renderArtistManager();notify('Artist profile created')}catch(err){notify(err.message)}};
   if(!artist)return;
   document.getElementById('artist-profile-form').onsubmit=async e=>{e.preventDefault();try{await api(`/admin/artists/${artist.id}`,{method:'PUT',body:{name:e.target.elements.name.value,bio:e.target.elements.bio.value}});renderArtistManager();notify('Artist saved')}catch(err){notify(err.message)}};
-  document.querySelectorAll('[data-artist-upload]').forEach(form=>form.onsubmit=async e=>{e.preventDefault();const file=form.querySelector('input[type=file]').files[0];if(!file)return;try{await uploadArtistImage(artist.id,form.dataset.artistUpload,file);renderArtistManager();notify('Artist image saved')}catch(err){notify(err.message)}});
+  document.querySelectorAll('[data-artist-upload]').forEach(form=>form.onsubmit=async e=>{e.preventDefault();const file=form.querySelector('input[type=file]').files[0];if(!file)return;try{const cropped=await cropArtistImage(file,form.dataset.artistUpload);if(!cropped)return;await uploadArtistImage(artist.id,form.dataset.artistUpload,cropped);renderArtistManager();notify('Artist image saved')}catch(err){notify(err.message)}});
   document.getElementById('assign-release-form').onsubmit=async e=>{e.preventDefault();try{await api(`/admin/albums/${e.target.elements.album_id.value}/artist`,{method:'PUT',body:{artist_id:artist.id,release_type:e.target.elements.release_type.value}});renderArtistManager();notify('Release assigned')}catch(err){notify(err.message)}};
 }
 
 const featureHandleClick=handleClick;
 handleClick=async function(e) {
-  const el=e.target.closest('[data-action],[data-save-release],[data-remove-artist-image],[data-play-artist],[data-track-menu],[data-episode-menu],[data-queue-remove],[data-flow-jump]');
+  const el=e.target.closest('[data-action],[data-save-release],[data-remove-artist-image],[data-play-artist],[data-track-menu],[data-episode-menu],[data-queue-remove],[data-flow-jump],[data-library-track],[data-library-album],[data-follow-artist],[data-notification-id],[data-notification-action]');
   try {
+    if(el?.dataset.libraryTrack){e.stopPropagation();const id=Number(el.dataset.libraryTrack),saved=el.classList.contains('is-saved');await api(`/library/tracks/${id}`,{method:saved?'DELETE':'PUT'});notify(saved?'Song removed from your library':'Song added to your library');navigate(state.view,state.id,false);return}
+    if(el?.dataset.libraryAlbum){e.stopPropagation();const id=Number(el.dataset.libraryAlbum),saved=el.classList.contains('is-saved');await api(`/library/albums/${id}`,{method:saved?'DELETE':'PUT'});notify(saved?'Album removed from your library':'Album added to your library');navigate(state.view,state.id,false);return}
+    if(el?.dataset.followArtist){e.stopPropagation();const followed=el.classList.contains('is-followed');await api(`/artists/${el.dataset.followArtist}/follow`,{method:followed?'DELETE':'PUT'});notify(followed?'Artist unfollowed':'Following artist — new songs will appear in notifications');navigate(state.view,state.id,false);return}
+    if(el?.dataset.notificationAction==='read-all'){e.stopPropagation();await api('/notifications/read-all',{method:'PUT'});refreshNotifications();return}
+    if(el?.dataset.notificationId){e.stopPropagation();await api(`/notifications/${el.dataset.notificationId}/read`,{method:'PUT'});document.querySelector('.notification-dropdown').hidden=true;document.querySelector('.notification-bell').setAttribute('aria-expanded','false');refreshNotifications();navigate('album',el.dataset.albumId);return}
     if(el?.dataset.trackMenu){e.stopPropagation();const id=Number(el.dataset.trackMenu);const item=state.visibleTracks?.find(t=>t.id===id)||((await api('/tracks')).find(t=>t.id===id));if(item){const rect=el.getBoundingClientRect();showQueueMenu(item,rect.left,rect.bottom+5)}return}
     if(el?.dataset.episodeMenu){e.stopPropagation();const episode=state.visibleEpisodes?.find(t=>t.id===Number(el.dataset.episodeMenu));if(episode){const rect=el.getBoundingClientRect();showQueueMenu(podcastTrack(episode),rect.left,rect.bottom+5)}return}
     if(el?.dataset.queueRemove){state.queue.splice(Number(el.dataset.queueRemove),1);state.randomNextIndex=null;renderQueue();notify('Removed from queue');return}
