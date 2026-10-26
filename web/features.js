@@ -20,6 +20,8 @@ function applyTheme() {
 function refreshUserChip() {
   const chip = document.querySelector('.user-chip');
   if (chip && state.user) chip.innerHTML = `${avatarMarkup(state.user)}<span class="username">${esc(state.user.display_name||state.user.username)}</span>`;
+  const name=document.querySelector('.profile-menu-name');
+  if(name&&state.user)name.textContent=state.user.display_name||state.user.username;
 }
 
 const coreRenderShell = renderShell;
@@ -33,6 +35,11 @@ renderShell = function() {
   document.querySelectorAll('.sidebar .side-group')[1]?.classList.add('secondary-side-group');
   document.querySelector('.top-left')?.insertAdjacentHTML('afterend', `<label class="top-search">${icon('search')}<input id="global-search" type="search" placeholder="Search music" aria-label="Search your library and the server" autocomplete="off"></label>`);
   document.querySelector('.top-right')?.insertAdjacentHTML('beforeend', `<div class="notification-wrap"><button class="icon-button notification-bell" aria-label="Notifications" aria-expanded="false" title="Notifications">${icon('bell')}<span class="notification-badge" hidden></span></button><div class="notification-dropdown" hidden></div></div>`);
+  const chip=document.querySelector('.user-chip');
+  const profileWrap=document.createElement('div');profileWrap.className='profile-menu-wrap';
+  chip.before(profileWrap);profileWrap.append(chip);
+  chip.setAttribute('aria-haspopup','true');chip.setAttribute('aria-expanded','false');
+  profileWrap.insertAdjacentHTML('beforeend',`<div class="profile-dropdown" hidden><div class="profile-menu-heading"><strong class="profile-menu-name">${esc(state.user.display_name||state.user.username)}</strong><small>@${esc(state.user.username)} · ${esc(state.user.role)}</small></div><button type="button" data-view="profile">${icon('user')} Your Settings</button>${state.user.role==='admin'?`<button type="button" data-view="settings">${icon('settings')} Admin Settings</button>`:''}<div class="profile-menu-divider"></div><button type="button" data-action="logout">${icon('logout')} Sign out</button></div>`);
   document.querySelector('.sidebar .brand')?.insertAdjacentHTML('afterend', '<div class="spotify-side-identity"><img src="/assets/spotify-icon.svg" alt=""><span>Spotify theme</span></div>');  document.querySelector('.top-right')?.insertAdjacentHTML('afterbegin', '<div class="sabrina-theme-badge"><img src="/assets/sabrina-signature.svg" alt=""><span>SABRINA<br>CARPENTER</span></div>');
   document.querySelector('.side-bottom')?.insertAdjacentHTML('afterbegin', `<button class="nav-item" data-view="profile">${icon('user')}<span>Your Settings</span></button>`);
   document.querySelector('.player-right')?.insertAdjacentHTML('afterbegin', `<button class="icon-button player-lyrics" data-view="nowplaying" title="Now Playing and lyrics" aria-label="Now Playing and lyrics" aria-pressed="false">${icon('lyrics')}</button>`);
@@ -45,7 +52,6 @@ renderShell = function() {
   search.addEventListener('focus',()=>{if(state.view!=='search')navigate('search')});
   search.addEventListener('input',()=>{state.searchQuery=search.value;if(state.view!=='search')navigate('search');else renderSearch()});
   document.querySelector('.notification-bell').addEventListener('click',toggleNotifications);
-  document.getElementById('play-pause').addEventListener('click',e=>{const button=e.currentTarget;button.classList.remove('play-bounce');void button.offsetWidth;button.classList.add('play-bounce')});
   clearInterval(state.notificationTimer);
   refreshNotifications();
   state.notificationTimer=setInterval(refreshNotifications,30000);
@@ -103,6 +109,23 @@ function toggleNotifications() {
   if(!dropdown.hidden)refreshNotifications();
 }
 document.addEventListener('click',e=>{if(!e.target.closest('.notification-wrap')){const wrap=document.querySelector('.notification-wrap');if(wrap){wrap.querySelector('.notification-dropdown').hidden=true;wrap.querySelector('.notification-bell').setAttribute('aria-expanded','false')}}});
+
+function closeProfileMenu(restoreFocus=false){
+  const wrap=document.querySelector('.profile-menu-wrap');if(!wrap)return;
+  const dropdown=wrap.querySelector('.profile-dropdown');
+  if(dropdown.hidden)return;
+  dropdown.hidden=true;
+  wrap.querySelector('.user-chip').setAttribute('aria-expanded','false');
+  if(restoreFocus)wrap.querySelector('.user-chip').focus();
+}
+function toggleProfileMenu(){
+  const wrap=document.querySelector('.profile-menu-wrap');if(!wrap)return;
+  const dropdown=wrap.querySelector('.profile-dropdown');
+  if(!dropdown.hidden){closeProfileMenu();return}
+  dropdown.hidden=false;
+  wrap.querySelector('.user-chip').setAttribute('aria-expanded','true');
+}
+document.addEventListener('click',e=>{if(!e.target.closest('.profile-menu-wrap')||e.target.closest('.profile-dropdown button'))closeProfileMenu()});
 
 const coreRenderHome=renderHome;
 renderHome=async function() {
@@ -179,6 +202,7 @@ function closePlayerPanel(restoreFocus=true) {
 const coreEndSession=endSession;
 endSession=function() {
   closePlayerPanel(false);
+  closeProfileMenu();
   clearInterval(state.notificationTimer);
   clearTimeout(searchTimer);
   state.searchQuery='';
@@ -190,6 +214,7 @@ document.addEventListener('keydown',e=>{
   if(e.key!=='Escape')return;
   const modal=document.querySelector('.modal-backdrop');
   if(modal){e.preventDefault();modal.remove();return}
+  if(document.querySelector('.profile-dropdown:not([hidden])')){e.preventDefault();closeProfileMenu(true);return}
   if(activePlayerPanel){e.preventDefault();closePlayerPanel()}
 });
 document.addEventListener('click',e=>{if(e.target.closest('[data-player-panel-close]')){e.preventDefault();closePlayerPanel()}});
@@ -472,7 +497,7 @@ handleClick=async function(e) {
   if(!state.user)applyTheme();
 };
 
-accountModal=function(){modal(`${modalHead('Your account')}<div class="account-summary">${avatarMarkup(state.user,'profile-avatar')}<div><strong>${esc(state.user.display_name||state.user.username)}</strong><small>@${esc(state.user.username)} · ${esc(state.user.role)}</small></div></div><div class="profile-actions"><button class="outline-button" data-view="profile" data-close-modal>Your Settings</button><button class="outline-button" data-action="logout">${icon('logout')} Sign out</button></div>`)};
+accountModal=toggleProfileMenu;
 
 audio.addEventListener('timeupdate',()=>{
   syncLyrics();

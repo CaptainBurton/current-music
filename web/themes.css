@@ -285,11 +285,14 @@ body[data-theme="sabrina"] .player-panel{border-radius:0}
 .favorite-button.heart-pop svg{animation:heart-pop .43s cubic-bezier(.25,.8,.2,1.2)}
 .player-controls button:not(.main-play){width:29px;height:29px;border-radius:50%;transition:transform .2s cubic-bezier(.2,1.3,.35,1),background .2s,color .2s}
 .player-controls button:not(.main-play):hover{transform:scale(1.15);background:var(--blue-soft)}
-.player-controls .main-play{transition:transform .3s cubic-bezier(.17,1.6,.3,1),box-shadow .2s;box-shadow:0 4px 12px #0004}
-.player-controls .main-play:hover{transform:scale(1.14);box-shadow:0 6px 20px var(--blue-soft)}
-.player-controls .main-play:active{transform:scale(.9)}
-@keyframes play-bounce{0%{transform:scale(1)}32%{transform:scale(.83)}60%{transform:scale(1.23)}82%{transform:scale(.96)}100%{transform:scale(1)}}
-.player-controls .main-play.play-bounce{animation:play-bounce .45s cubic-bezier(.2,.8,.3,1)}
+.player-controls .main-play{position:relative;transition:transform .2s ease,box-shadow .2s ease;box-shadow:0 4px 12px #0004}
+.player-controls .main-play:hover{transform:scale(1.055);box-shadow:0 6px 17px var(--blue-soft)}
+.player-controls .main-play:active{transform:scale(.97)}
+.main-play .play-icon,.main-play .pause-icon{position:absolute;inset:0;display:grid;place-items:center;transition:opacity .2s ease,transform .2s ease}
+.main-play .play-icon{opacity:1;transform:scale(1)}
+.main-play .pause-icon{opacity:0;transform:scale(.88)}
+.main-play.is-playing .play-icon{opacity:0;transform:scale(.88)}
+.main-play.is-playing .pause-icon{opacity:1;transform:scale(1)}
 .player-right .icon-button{transition:transform .2s cubic-bezier(.2,1.3,.35,1),background .2s,color .2s}
 .player-right .icon-button:hover{transform:scale(1.12)}
 .crop-stage{display:grid;place-items:center;background:#080b10;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:17px 0;touch-action:none}
@@ -301,4 +304,34 @@ body[data-theme="sabrina"] .player-panel{border-radius:0}
 .crop-actions{display:flex;justify-content:flex-end;gap:10px}
 @media(max-width:760px){.sidebar .secondary-side-group{display:none}.topbar{gap:7px;padding:0 12px}.top-left{gap:0}.top-title,.topbar .pill{display:none}.top-search{height:35px;padding:0 8px}.top-search input{font-size:11px}.top-right{gap:4px}.user-chip{padding:4px}.notification-dropdown{right:0}.track-table th:last-child,.track-table td:last-child{width:132px}.track-controls button:nth-child(2){display:grid}.track-controls button{width:25px;height:26px;padding:3px}.track-controls svg{width:15px;height:15px}.track-controls span{display:none}.card-save{top:15px;right:15px}}
 @media(max-width:390px){.track-table th:last-child,.track-table td:last-child{width:108px}.track-controls button{width:24px}}
-@media(prefers-reduced-motion:reduce){.favorite-button.heart-pop svg,.player-controls .main-play.play-bounce{animation:none}.player-controls button,.player-right .icon-button,.card-save{transition:none}}
+@media(prefers-reduced-motion:reduce){.favorite-button.heart-pop svg{animation:none}.player-controls button,.player-right .icon-button,.card-save,.main-play .play-icon,.main-play .pause-icon{transition:none}}
+
+/* Clear spacing and compact controls across the desktop and mobile layouts. */
+@media(min-width:761px){.sidebar .brand{padding-bottom:20px;margin-bottom:8px}.sidebar .side-group{display:flex;flex-direction:column;gap:5px;margin:8px 0 14px}.sidebar .side-separator{flex:none;margin:9px 14px 16px}.sidebar .side-label{margin:7px 0 5px}.sidebar .side-playlists{padding:3px 0}.sidebar .side-bottom{padding-top:16px}.sidebar .nav-item{min-height:44px}}
+.profile-menu-wrap{position:relative;flex:none}
+.user-chip[aria-expanded="true"]{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-soft)}
+.profile-dropdown{position:absolute;right:0;top:calc(100% + 11px);width:230px;padding:6px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 42px #0009;z-index:70}
+.profile-dropdown[hidden]{display:none}
+.profile-menu-heading{padding:11px 12px 12px}
+.profile-menu-heading strong,.profile-menu-heading small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile-menu-heading strong{font-size:13px}.profile-menu-heading small{margin-top:4px;color:var(--muted);font-size:11px}
+.profile-dropdown button{display:flex;align-items:center;gap:11px;width:100%;min-height:39px;padding:8px 11px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left;font:inherit;font-size:12px;cursor:pointer}
+.profile-dropdown button:hover,.profile-dropdown button:focus-visible{background:var(--blue-soft);color:var(--blue)}
+.profile-dropdown button svg{width:17px;height:17px;flex:none}
+.profile-menu-divider{height:1px;margin:5px 9px;background:var(--line)}
+.volume-toggle{width:30px;height:30px;color:inherit;transition:color .18s,background .18s}
+.volume-toggle:hover,.volume-toggle:focus-visible{color:var(--blue);background:var(--blue-soft)}
+.player-right.is-muted .volume{opacity:.55}
+.album-artist-link{padding:0;border:0;background:transparent;color:var(--text);text-transform:none;letter-spacing:0;font:inherit;cursor:pointer;transition:color .18s ease}
+.album-artist-link:hover,.album-artist-link:focus-visible{color:var(--blue);text-decoration:underline;text-underline-offset:3px}
+.page-actions{flex-wrap:wrap;column-gap:12px;row-gap:10px}
+.page-header>div:last-child{min-width:0}
+.page-header h1{overflow-wrap:anywhere}
+.track-controls{gap:4px}
+.track-table th:last-child,.track-table td:last-child{width:170px}
+body[data-theme="ios6"] .album-artist-link{color:#172532}
+body[data-theme="ios6"] .album-artist-link:hover,body[data-theme="ios6"] .album-artist-link:focus-visible{color:#075b9d}
+body[data-theme="ios6"] .track-table th{padding-top:11px;padding-bottom:11px;line-height:1.4;vertical-align:middle}
+body[data-theme="ios6"] .profile-dropdown{background:linear-gradient(#f8fafb,#dde5ea);border-color:#8e9ca6}
+@media(max-width:760px){.sidebar .side-group{gap:2px}.player-right .volume-toggle{display:grid;width:32px;height:32px}.profile-dropdown{right:0;width:min(230px,calc(100vw - 24px))}.track-table th:last-child,.track-table td:last-child{width:132px}.track-controls{gap:1px}}
+@media(max-width:390px){.track-table th:last-child,.track-table td:last-child{width:108px}}
