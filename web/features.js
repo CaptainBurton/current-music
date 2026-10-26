@@ -4,6 +4,8 @@ paths.lyrics = '<path d="M4 5h16M4 10h12M4 15h16M4 20h10"/>';
 paths.queue = '<path d="M3 6h12M3 11h12M3 16h8M15 15l6 3-6 3z"/>';
 const lyricsCache = new Map();
 let lastProgressSave = 0;
+let activePlayerPanel = null;
+let playerPanelOpener = null;
 
 function avatarMarkup(user, className='avatar') {
   return `<span class="${className}">${user.avatar_url?`<img src="${esc(user.avatar_url)}" alt="">`:esc((user.display_name||user.username||'?')[0].toUpperCase())}</span>`;
@@ -26,8 +28,11 @@ renderShell = function() {
   firstGroup?.insertAdjacentHTML('beforeend', `<button class="nav-item" data-view="podcasts">${icon('mic')}<span>Podcasts</span></button>`);
   document.querySelector('.sidebar .brand')?.insertAdjacentHTML('afterend', '<div class="spotify-side-identity"><img src="/assets/spotify-icon.svg" alt=""><span>Spotify theme</span></div>');  document.querySelector('.top-right')?.insertAdjacentHTML('afterbegin', '<div class="sabrina-theme-badge"><img src="/assets/sabrina-signature.svg" alt=""><span>SABRINA<br>CARPENTER</span></div>');
   document.querySelector('.side-bottom')?.insertAdjacentHTML('afterbegin', `<button class="nav-item" data-view="profile">${icon('user')}<span>Your Settings</span></button>`);
-  document.querySelector('.player-right')?.insertAdjacentHTML('afterbegin', `<button class="icon-button player-lyrics" data-view="nowplaying" title="Now Playing and lyrics" aria-label="Now Playing and lyrics">${icon('lyrics')}</button>`);
-  document.querySelector('.player-right')?.insertAdjacentHTML('afterbegin', `<button class="icon-button player-queue" data-view="queue" title="Queue" aria-label="Queue">${icon('queue')}</button>`);
+  document.querySelector('.player-right')?.insertAdjacentHTML('afterbegin', `<button class="icon-button player-lyrics" data-view="nowplaying" title="Now Playing and lyrics" aria-label="Now Playing and lyrics" aria-pressed="false">${icon('lyrics')}</button>`);
+  document.querySelector('.player-right')?.insertAdjacentHTML('afterbegin', `<button class="icon-button player-queue" data-view="queue" title="Queue" aria-label="Queue" aria-pressed="false">${icon('queue')}</button>`);
+  document.querySelector('.app')?.insertAdjacentHTML('beforeend', `<div class="player-panel-backdrop" data-player-panel-close></div><aside class="player-panel" role="dialog" aria-modal="false" aria-hidden="true" aria-labelledby="player-panel-title"><header class="player-panel-header"><div><span class="eyebrow">YOUR PLAYER</span><h2 id="player-panel-title"></h2></div><button class="icon-button player-panel-close" data-player-panel-close aria-label="Close panel" title="Close panel">${icon('close')}</button></header><div class="player-panel-body"></div></aside>`);
+  activePlayerPanel = null;
+  document.body.classList.remove('player-panel-open');
   refreshUserChip();
 };
 
@@ -47,20 +52,73 @@ renderHome=async function() {
 
 const coreNavigate = navigate;
 navigate = async function(view='home', id=null, push=true) {
-  if (!['profile','podcasts','podcast','nowplaying','queue'].includes(view)) return coreNavigate(view,id,push);
   if (!state.user) return;
+  if (view==='queue' || view==='nowplaying') {
+    if (!document.getElementById('content')?.innerHTML) await coreNavigate('home',null,false);
+    openPlayerPanel(view);
+    return;
+  }
+  closePlayerPanel();
+  if (!['profile','podcasts','podcast'].includes(view)) return coreNavigate(view,id,push);
   state.view=view; state.id=id;
   if (push) pushAppRoute(view,id);
   try {
     if (view==='profile') renderProfile();
     else if (view==='podcasts') await renderPodcasts();
     else if (view==='podcast') await renderPodcast(id);
-    else if (view==='queue') renderQueue();
-    else renderNowPlaying();
   } catch(err) {
     setContent(empty('Could not open this page',err.message),'Error');
   }
 };
+
+function setPlayerPanelContent(html, title) {
+  const panel=document.querySelector('.player-panel');
+  if (!panel) return;
+  panel.querySelector('.player-panel-body').innerHTML=html;
+  panel.querySelector('#player-panel-title').textContent=title;
+}
+
+function openPlayerPanel(view) {
+  const panel=document.querySelector('.player-panel');
+  if (!panel) return;
+  if (!activePlayerPanel) playerPanelOpener=document.activeElement;
+  activePlayerPanel=view;
+  if (view==='queue') renderQueue();
+  else renderNowPlaying();
+  panel.removeAttribute('aria-hidden');
+  document.body.classList.add('player-panel-open');
+  document.querySelector('.main')?.setAttribute('inert','');
+  document.querySelector('.sidebar')?.setAttribute('inert','');
+  document.querySelectorAll('.player-right [data-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.view===view)));
+  panel.querySelector('.player-panel-close').focus();
+}
+
+function closePlayerPanel(restoreFocus=true) {
+  if (!activePlayerPanel) return;
+  activePlayerPanel=null;
+  document.body.classList.remove('player-panel-open');
+  document.querySelector('.main')?.removeAttribute('inert');
+  document.querySelector('.sidebar')?.removeAttribute('inert');
+  document.querySelectorAll('.player-right [data-view]').forEach(button=>button.setAttribute('aria-pressed','false'));
+  if (restoreFocus && playerPanelOpener?.isConnected) playerPanelOpener.focus();
+  playerPanelOpener=null;
+  document.querySelector('.player-panel')?.setAttribute('aria-hidden','true');
+  if (location.hash==='#queue' || location.hash==='#nowplaying') history.replaceState({currentApp:true,from:null},'',`#${state.view||'home'}`);
+}
+
+const coreEndSession=endSession;
+endSession=function() {
+  closePlayerPanel(false);
+  coreEndSession();
+};
+
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  const modal=document.querySelector('.modal-backdrop');
+  if(modal){e.preventDefault();modal.remove();return}
+  if(activePlayerPanel){e.preventDefault();closePlayerPanel()}
+});
+document.addEventListener('click',e=>{if(e.target.closest('[data-player-panel-close]')){e.preventDefault();closePlayerPanel()}});
 
 function renderProfile() {
   const u=state.user;
@@ -133,13 +191,13 @@ function queueItem(item,mode) {
   else state.queue.push(entry);
   state.randomNextIndex=null;
   notify(mode==='next'?'Will play next':'Added to queue');
-  if(state.view==='nowplaying')renderNowPlaying();
-  if(state.view==='queue')renderQueue();
+  if(activePlayerPanel==='nowplaying')renderNowPlaying();
+  if(activePlayerPanel==='queue')renderQueue();
 }
 
 function renderQueue() {
   const upcoming=state.queue.slice(state.queueIndex+1,state.queueIndex+101);
-  setContent(`<div class="page-header"><div><div class="eyebrow">COMING UP</div><h1>Queue</h1><p>${upcoming.length} item${upcoming.length===1?'':'s'} up next</p></div></div>
+  setPlayerPanelContent(`<p class="player-panel-summary">${upcoming.length} item${upcoming.length===1?'':'s'} up next</p>
     ${state.current?`<section class="section"><h2 class="section-title">Now playing</h2><div class="queue-row current">${miniCover(state.current)}<div><strong>${esc(state.current.title)}</strong><small>${esc(state.current.artist)}</small></div><button class="outline-button" data-view="nowplaying">Open player</button></div></section>`:''}
     <section class="section"><h2 class="section-title">Up next</h2>${upcoming.length?`<div class="queue-list">${upcoming.map((item,i)=>`<div class="queue-row">${miniCover(item)}<div><strong>${esc(item.title)}</strong><small>${esc(item.artist)}</small></div><button class="icon-button" data-queue-remove="${state.queueIndex+1+i}" title="Remove from queue" aria-label="Remove ${esc(item.title)} from queue">${icon('close')}</button></div>`).join('')}</div>`:empty('Queue is empty','Use a song’s options menu to choose Play Next or Add to Queue.')}</section>`,'Queue');
 }
@@ -172,7 +230,8 @@ playTrack=function(item,queue) {
     state.queueIndex=state.queue.indexOf(item);
     state.randomNextIndex=null;
     loadLyrics(item);
-    if(state.view==='nowplaying')renderNowPlaying();
+    if(activePlayerPanel==='nowplaying')renderNowPlaying();
+    if(activePlayerPanel==='queue')renderQueue();
     return;
   }
   state.queue=queue||[item];state.queueIndex=state.queue.indexOf(item);state.current=item;state.randomNextIndex=null;
@@ -180,7 +239,8 @@ playTrack=function(item,queue) {
   audio.addEventListener('loadedmetadata',()=>{if(state.current===item&&item.position>0&&item.position<audio.duration-10)audio.currentTime=item.position},{once:true});
   audio.play().catch(()=>notify('Could not play this podcast episode.'));
   updatePlayer();
-  if(state.view==='nowplaying')renderNowPlaying();
+  if(activePlayerPanel==='nowplaying')renderNowPlaying();
+  if(activePlayerPanel==='queue')renderQueue();
   if('mediaSession'in navigator)navigator.mediaSession.metadata=new MediaMetadata({title:item.title,artist:item.artist,album:'Podcast',artwork:item.cover_url?[{src:item.cover_url}]:[]});
 };
 
@@ -217,7 +277,7 @@ async function loadLyrics(track,force=false) {
     if(force||(!data.synced?.length&&!data.plain&&data.source!=='none'))data=await api(`/tracks/${track.id}/lyrics/lookup${force?'?force=1':''}`,{method:'POST'});
     lyricsCache.set(track.id,data);
   } catch(err) {lyricsCache.set(track.id,{synced:[],plain:'',error:err.message})}
-  if(state.view==='nowplaying'&&state.current?.id===track.id&&state.current?.kind!=='podcast')renderNowPlaying();
+  if(activePlayerPanel==='nowplaying'&&state.current?.id===track.id&&state.current?.kind!=='podcast')renderNowPlaying();
 }
 
 function flowCard(item,position) {
@@ -281,7 +341,7 @@ function solidPlayGlyph(playing) {
 
 function renderNowPlaying() {
   const item=state.current;
-  if(!item){setContent(empty('Nothing playing','Play a song or podcast episode to open Now Playing.'),'Now Playing');return}
+  if(!item){setPlayerPanelContent(empty('Nothing playing','Play a song or podcast episode to open Now Playing.'),'Now Playing');return}
   const previousStage=document.querySelector('.now-cover-stage');
   const podcast=item.kind==='podcast';
   const lyrics=podcast?null:lyricsCache.get(item.id);
@@ -293,14 +353,14 @@ function renderNowPlaying() {
   const previous=state.queue[state.queueIndex-1];
   const next=state.queue[nextQueueIndex()];
   const playGlyph=solidPlayGlyph(state.playing);
-  setContent(`<div class="now-playing"><div class="now-art-column"><div class="eyebrow">${podcast?'PODCAST EPISODE':'NOW PLAYING'}</div><div class="now-cover-stage coverflow">${flowCard(previous,'previous')}${flowCard(next,'next')}${flowCard(item,'current')}</div><div class="now-meta"><h1>${esc(item.title)}</h1><p>${esc(item.artist)}</p></div><div class="now-actions"><button class="outline-button now-toggle" data-action="now-toggle">${playGlyph}<span>${state.playing?'Pause':'Play'}</span></button><button class="outline-button" data-view="queue">${icon('queue')}<span>Queue</span></button>${!podcast&&state.user.role==='admin'?'<button class="outline-button" data-action="add-lyrics">Add lyrics</button>':''}</div></div><div class="lyrics-column"><div class="lyrics-heading"><div><div class="eyebrow">${podcast?'ABOUT THIS EPISODE':'SING ALONG'}</div><h2>${podcast?'Episode notes':'Lyrics'}</h2></div>${!podcast&&lyrics?.source?`<span class="lyrics-source">${esc(lyrics.source==='lrclib'?'LRCLIB':lyrics.source==='local'?'Local .lrc':lyrics.source==='manual'?'Your lyrics':'')}</span>`:''}</div><div class="lyrics-panel">${lyricHtml}</div></div></div>`,'Now Playing');
+  setPlayerPanelContent(`<div class="now-playing"><div class="now-art-column"><div class="eyebrow">${podcast?'PODCAST EPISODE':'NOW PLAYING'}</div><div class="now-cover-stage coverflow">${flowCard(previous,'previous')}${flowCard(next,'next')}${flowCard(item,'current')}</div><div class="now-meta"><h1>${esc(item.title)}</h1><p>${esc(item.artist)}</p></div><div class="now-actions"><button class="outline-button now-toggle" data-action="now-toggle">${playGlyph}<span>${state.playing?'Pause':'Play'}</span></button><button class="outline-button" data-view="queue">${icon('queue')}<span>Queue</span></button>${!podcast&&state.user.role==='admin'?'<button class="outline-button" data-action="add-lyrics">Add lyrics</button>':''}</div></div><div class="lyrics-column"><div class="lyrics-heading"><div><div class="eyebrow">${podcast?'ABOUT THIS EPISODE':'SING ALONG'}</div><h2>${podcast?'Episode notes':'Lyrics'}</h2></div>${!podcast&&lyrics?.source?`<span class="lyrics-source">${esc(lyrics.source==='lrclib'?'LRCLIB':lyrics.source==='local'?'Local .lrc':lyrics.source==='manual'?'Your lyrics':'')}</span>`:''}</div><div class="lyrics-panel">${lyricHtml}</div></div></div>`,'Now Playing');
   transitionCoverFlow(previousStage);
   if(!podcast&&!lyrics)loadLyrics(item);
   syncLyrics();
 }
 
 function syncLyrics() {
-  if(state.view!=='nowplaying'||!state.current||state.current.kind==='podcast')return;
+  if(activePlayerPanel!=='nowplaying'||!state.current||state.current.kind==='podcast')return;
   const panel=document.querySelector('.lyrics-panel');
   const lines=lyricsCache.get(state.current.id)?.synced;
   if(!panel||!lines?.length)return;
