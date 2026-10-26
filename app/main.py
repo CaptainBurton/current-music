@@ -493,6 +493,8 @@ def track_rows(conn, user_id, where="", params=(), order="albums.artist, albums.
     query = f"""SELECT tracks.id, tracks.title, tracks.artist, tracks.album_id, albums.title AS album,
       albums.artist AS album_artist, albums.year, albums.cover_path, tracks.duration, tracks.disc,
       tracks.track_no, tracks.codec, (favorites.track_id IS NOT NULL) AS favorite,
+      (saved_track.track_id IS NOT NULL) AS saved_track,
+      (saved_album.album_id IS NOT NULL) AS saved_album,
       (saved_track.track_id IS NOT NULL OR saved_album.album_id IS NOT NULL) AS saved
       FROM tracks JOIN albums ON albums.id=tracks.album_id
       LEFT JOIN favorites ON favorites.track_id=tracks.id AND favorites.user_id=?
@@ -503,6 +505,8 @@ def track_rows(conn, user_id, where="", params=(), order="albums.artist, albums.
     for row in rows:
         row["cover_url"] = f"/api/albums/{row['album_id']}/cover" if row.pop("cover_path") else None
         row["favorite"] = bool(row["favorite"])
+        row["saved_track"] = bool(row["saved_track"])
+        row["saved_album"] = bool(row["saved_album"])
         row["saved"] = bool(row["saved"])
     return rows
 

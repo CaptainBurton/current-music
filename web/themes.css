@@ -280,6 +280,8 @@ body[data-theme="sabrina"] .player-panel{border-radius:0}
 .track-controls button:hover{transform:scale(1.13);background:var(--blue-soft)}
 .track-controls button:focus-visible,.card-save:focus-visible,.notification-bell:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
 .library-track-button.is-saved,.follow-button.is-followed{color:var(--blue)!important}
+.library-track-button,.card-save,.follow-button{transition:color .18s ease,background .18s ease,transform .18s ease}
+.library-track-button:disabled,.card-save:disabled,.follow-button:disabled,[data-library-album]:disabled{opacity:.6;cursor:progress}
 .favorite-button.is-active svg{fill:currentColor;stroke:currentColor}
 @keyframes heart-pop{0%{transform:scale(.65)}45%{transform:scale(1.34)}72%{transform:scale(.92)}100%{transform:scale(1)}}
 .favorite-button.heart-pop svg{animation:heart-pop .43s cubic-bezier(.25,.8,.2,1.2)}

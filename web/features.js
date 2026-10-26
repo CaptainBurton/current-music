@@ -203,6 +203,7 @@ const coreEndSession=endSession;
 endSession=function() {
   closePlayerPanel(false);
   closeProfileMenu();
+  librarySummaryRequest++;
   clearInterval(state.notificationTimer);
   clearTimeout(searchTimer);
   state.searchQuery='';
@@ -596,12 +597,96 @@ async function renderArtistManager() {
 }
 
 const featureHandleClick=handleClick;
+let librarySummaryRequest=0;
+
+async function refreshLibrarySummary(){
+  if(!state.user)return;
+  const request=++librarySummaryRequest;
+  const data=await api('/home');
+  if(request!==librarySummaryRequest||!state.user)return;
+  state.home=data;
+  const count=data.counts.tracks;
+  const pill=document.getElementById('library-count');
+  if(pill)pill.textContent=`${count} ${state.user.role==='admin'?'SERVER':'SAVED'} SONG${count===1?'':'S'}`;
+}
+
+function updateTrackSave(id,saved){
+  for(const track of state.visibleTracks||[]){if(track.id===id){track.saved_track=saved;track.saved=saved||!!track.saved_album}}
+  for(const track of state.queue||[]){if(track.id===id){track.saved_track=saved;track.saved=saved||!!track.saved_album}}
+  if(state.current?.id===id){state.current.saved_track=saved;state.current.saved=saved||!!state.current.saved_album}
+  document.querySelectorAll(`[data-library-track="${id}"]`).forEach(button=>{
+    const title=button.closest('tr')?.querySelector('.track-line-text strong')?.textContent||'song';
+    button.classList.toggle('is-saved',saved);
+    button.setAttribute('aria-pressed',String(saved));
+    button.setAttribute('aria-label',`${saved?'Remove saved song':'Save song'}: ${title}`);
+    button.title=saved?'Remove saved song':'Save song';
+    button.innerHTML=icon(saved?'check':'plus');
+  });
+}
+
+function updateAlbumSave(id,saved){
+  for(const album of [...(state.home?.albums||[]),...(state.home?.top_albums||[])]){if(album.id===id)album.saved=saved}
+  for(const track of state.visibleTracks||[]){if(track.album_id===id){track.saved_album=saved;track.saved=!!track.saved_track||saved}}
+  for(const track of state.queue||[]){if(track.album_id===id){track.saved_album=saved;track.saved=!!track.saved_track||saved}}
+  if(state.current?.album_id===id){state.current.saved_album=saved;state.current.saved=!!state.current.saved_track||saved}
+  document.querySelectorAll(`[data-library-album="${id}"]`).forEach(button=>{
+    button.classList.toggle('is-saved',saved);
+    button.setAttribute('aria-pressed',String(saved));
+    if(button.classList.contains('card-save')){
+      const title=button.closest('.card')?.querySelector('.card-title')?.textContent||'album';
+      button.setAttribute('aria-label',`${saved?'Remove':'Add'} ${title} ${saved?'from':'to'} your library`);
+      button.title=saved?'Remove from your library':'Add to your library';
+      button.innerHTML=icon(saved?'check':'plus');
+    } else button.textContent=saved?'Remove from library':'Add to library';
+  });
+}
+
+function removeUnsavedTrackFromList(button,id){
+  if(state.view!=='tracks'||state.user.role==='admin')return;
+  const track=state.visibleTracks?.find(item=>item.id===id);
+  if(track?.saved)return;
+  const row=button.closest('tr');if(!row)return;
+  const next=row.nextElementSibling?.querySelector('[data-library-track]')||row.previousElementSibling?.querySelector('[data-library-track]');
+  row.remove();
+  state.visibleTracks=state.visibleTracks.filter(item=>item.id!==id);
+  const count=state.visibleTracks.length;
+  document.querySelector('.page-header p').textContent=`${count} song${count===1?'':'s'} in your library`;
+  if(!count)document.querySelector('.track-table')?.replaceWith(document.createRange().createContextualFragment(empty('No saved songs yet','Find songs in Search or Explore and save them to your library.')));
+  next?.focus({preventScroll:true});
+}
+
+function removeUnsavedAlbumFromList(button){
+  if(state.view!=='albums'||state.user.role==='admin')return;
+  const card=button.closest('.card');if(!card)return;
+  const next=card.nextElementSibling?.querySelector('[data-library-album]')||card.previousElementSibling?.querySelector('[data-library-album]');
+  const grid=card.parentElement;card.remove();
+  const count=grid.querySelectorAll('.card').length;
+  document.querySelector('.page-header p').textContent=`${count} album${count===1?'':'s'} in your library`;
+  if(!count)grid.replaceWith(document.createRange().createContextualFragment(empty('No albums yet','Search or Explore to add an album to your library.')));
+  next?.focus({preventScroll:true});
+}
+
 handleClick=async function(e) {
   const el=e.target.closest('[data-action],[data-save-release],[data-remove-artist-image],[data-play-artist],[data-track-menu],[data-episode-menu],[data-queue-remove],[data-flow-jump],[data-library-track],[data-library-album],[data-follow-artist],[data-notification-id],[data-notification-action]');
   try {
-    if(el?.dataset.libraryTrack){e.stopPropagation();const id=Number(el.dataset.libraryTrack),saved=el.classList.contains('is-saved');await api(`/library/tracks/${id}`,{method:saved?'DELETE':'PUT'});notify(saved?'Song removed from your library':'Song added to your library');navigate(state.view,state.id,false);return}
-    if(el?.dataset.libraryAlbum){e.stopPropagation();const id=Number(el.dataset.libraryAlbum),saved=el.classList.contains('is-saved');await api(`/library/albums/${id}`,{method:saved?'DELETE':'PUT'});notify(saved?'Album removed from your library':'Album added to your library');navigate(state.view,state.id,false);return}
-    if(el?.dataset.followArtist){e.stopPropagation();const followed=el.classList.contains('is-followed');await api(`/artists/${el.dataset.followArtist}/follow`,{method:followed?'DELETE':'PUT'});notify(followed?'Artist unfollowed':'Following artist — new songs will appear in notifications');navigate(state.view,state.id,false);return}
+    if(el?.dataset.libraryTrack){
+      e.stopPropagation();const id=Number(el.dataset.libraryTrack),saved=el.classList.contains('is-saved');el.disabled=true;
+      try {await api(`/library/tracks/${id}`,{method:saved?'DELETE':'PUT'});updateTrackSave(id,!saved);if(saved)removeUnsavedTrackFromList(el,id);notify(saved?'Song removed from saved songs':'Song saved to your library');refreshLibrarySummary().catch(()=>{})}
+      finally {el.disabled=false}
+      return;
+    }
+    if(el?.dataset.libraryAlbum){
+      e.stopPropagation();const id=Number(el.dataset.libraryAlbum),saved=el.classList.contains('is-saved');el.disabled=true;
+      try {await api(`/library/albums/${id}`,{method:saved?'DELETE':'PUT'});updateAlbumSave(id,!saved);if(saved)removeUnsavedAlbumFromList(el);notify(saved?'Album removed from your library':'Album added to your library');refreshLibrarySummary().catch(()=>{})}
+      finally {el.disabled=false}
+      return;
+    }
+    if(el?.dataset.followArtist){
+      e.stopPropagation();const followed=el.classList.contains('is-followed');el.disabled=true;
+      try {await api(`/artists/${el.dataset.followArtist}/follow`,{method:followed?'DELETE':'PUT'});el.classList.toggle('is-followed',!followed);el.setAttribute('aria-pressed',String(!followed));el.textContent=followed?'Follow artist':'Following';notify(followed?'Artist unfollowed':'Following artist — new songs will appear in notifications')}
+      finally {el.disabled=false}
+      return;
+    }
     if(el?.dataset.notificationAction==='read-all'){e.stopPropagation();await api('/notifications/read-all',{method:'PUT'});refreshNotifications();return}
     if(el?.dataset.notificationId){e.stopPropagation();await api(`/notifications/${el.dataset.notificationId}/read`,{method:'PUT'});document.querySelector('.notification-dropdown').hidden=true;document.querySelector('.notification-bell').setAttribute('aria-expanded','false');refreshNotifications();navigate('album',el.dataset.albumId);return}
     if(el?.dataset.trackMenu){e.stopPropagation();const id=Number(el.dataset.trackMenu);const item=state.visibleTracks?.find(t=>t.id===id)||((await api('/tracks')).find(t=>t.id===id));if(item){const rect=el.getBoundingClientRect();showQueueMenu(item,rect.left,rect.bottom+5)}return}
